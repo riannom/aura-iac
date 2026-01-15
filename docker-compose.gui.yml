@@ -1,0 +1,86 @@
+version: "3.9"
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        NETLAB_REF: ${NETLAB_REF:-release_26.01.01}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      - postgres
+      - redis
+    env_file: .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://netlab:netlab@postgres:5432/netlab_gui}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - NETLAB_WORKSPACE=${NETLAB_WORKSPACE:-/var/lib/netlab-gui}
+      - NETLAB_PROVIDER=${NETLAB_PROVIDER:-clab}
+      - LOCAL_AUTH_ENABLED=${LOCAL_AUTH_ENABLED:-true}
+      - MAX_CONCURRENT_JOBS_PER_USER=${MAX_CONCURRENT_JOBS_PER_USER:-2}
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
+      - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-}
+      - OIDC_SCOPES=${OIDC_SCOPES:-openid profile email}
+      - OIDC_APP_REDIRECT_URL=${OIDC_APP_REDIRECT_URL:-}
+    volumes:
+      - netlab_workspaces:/var/lib/netlab-gui
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        NETLAB_REF: ${NETLAB_REF:-release_26.01.01}
+    command: ["rq", "worker", "netlab"]
+    depends_on:
+      - redis
+      - postgres
+    env_file: .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://netlab:netlab@postgres:5432/netlab_gui}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - NETLAB_WORKSPACE=${NETLAB_WORKSPACE:-/var/lib/netlab-gui}
+      - NETLAB_PROVIDER=${NETLAB_PROVIDER:-clab}
+    volumes:
+      - netlab_workspaces:/var/lib/netlab-gui
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_USER=netlab
+      - POSTGRES_PASSWORD=netlab
+      - POSTGRES_DB=netlab_gui
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netlab"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7
+
+volumes:
+  netlab_workspaces:
+  pg_data:
