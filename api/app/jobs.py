@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from redis import Redis
 from rq import Queue
 
@@ -10,7 +11,6 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Job, Lab
 from app.netlab import run_netlab_command
-from app.config import settings
 from app.providers import ProviderActionError, node_action_command
 from app.storage import lab_workspace
 
@@ -18,14 +18,14 @@ redis_conn = Redis.from_url(settings.redis_url)
 queue = Queue("netlab", connection=redis_conn)
 
 
-def _build_command(lab_id: str, action: str) -> list[str]:
+def _build_command(lab_id: str, action: str) -> list[list[str]]:
     if action.startswith("node:"):
         _, subaction, node = action.split(":", 2)
         try:
             return node_action_command(settings.netlab_provider, lab_id, subaction, node)
         except ProviderActionError as exc:
             raise ValueError(str(exc)) from exc
-    return ["netlab", action]
+    return [["netlab", action]]
 
 
 def execute_netlab_action(job_id: str, lab_id: str, action: str) -> None:
@@ -40,14 +40,48 @@ def execute_netlab_action(job_id: str, lab_id: str, action: str) -> None:
 
         workspace = lab_workspace(lab_id)
         log_path = workspace / f"job-{job_id}.log"
-        command = _build_command(lab_id, action)
-        code, stdout, stderr = run_netlab_command(command, workspace)
-        log_path.write_text(stdout + "\n" + stderr, encoding="utf-8")
-
+        try:
+            commands = _build_command(lab_id, action)
+            output_chunks: list[str] = []
+            failed = False
+            for command in commands:
+                output_chunks.append(f"$ {' '.join(command)}\n")
+                code, stdout, stderr = run_netlab_command(command, workspace)
+                if stdout:
+                    output_chunks.append(stdout)
+                if stderr:
+                    if stdout and not stdout.endswith("\n"):
+                        output_chunks.append("\n")
+                    output_chunks.append(stderr)
+                if code != 0:
+                    failed = True
+                    break
+            log_content = "".join(output_chunks)
+            log_path.write_text(log_content, encoding="utf-8")
+            job_record.status = "failed" if failed else "completed"
+        except Exception as exc:
+            log_content = f"Failed to run action {action}: {exc}\n"
+            log_path.write_text(log_content, encoding="utf-8")
+            job_record.status = "failed"
         job_record.log_path = str(log_path)
-        job_record.status = "completed" if code == 0 else "failed"
         job_record.created_at = job_record.created_at or datetime.now(timezone.utc)
         session.commit()
+        if settings.log_forward_url:
+            try:
+                httpx.post(
+                    settings.log_forward_url,
+                    json={
+                        "job_id": job_id,
+                        "lab_id": lab_id,
+                        "action": action,
+                        "status": job_record.status,
+                        "log": log_content,
+                        "created_at": job_record.created_at.isoformat(),
+                    },
+                    timeout=5.0,
+                )
+            except Exception:
+                pass
     finally:
         session.close()
 

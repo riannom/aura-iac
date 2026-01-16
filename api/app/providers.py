@@ -9,17 +9,18 @@ class ProviderActionError(ValueError):
     pass
 
 
-def _unsupported_node_command(lab_id: str, action: str, node: str) -> list[str]:
+def _unsupported_node_command(lab_id: str, action: str, node: str) -> list[list[str]]:
     raise ProviderActionError("Node actions are not implemented for this provider")
 
 
-def _clab_node_command(lab_id: str, action: str, node: str) -> list[str]:
+def _clab_node_command(lab_id: str, action: str, node: str) -> list[list[str]]:
+    create_cmd = ["netlab", "create", "-p", "clab"]
     if action == "start":
-        command = ["clab", "deploy", "--node-filter", node, "-t", str(topology_path(lab_id))]
-        return command
+        command = ["clab", "deploy", "--node-filter", node, "-t", "clab.yml"]
+        return [create_cmd, command]
     if action == "stop":
-        command = ["clab", "destroy", "--node-filter", node, "-t", str(topology_path(lab_id))]
-        return command
+        command = ["clab", "destroy", "--node-filter", node, "-t", "clab.yml"]
+        return [create_cmd, command]
     raise ProviderActionError("Node action is not supported by provider")
 
 
@@ -44,7 +45,7 @@ def supported_node_actions(provider: str) -> set[str]:
     return set()
 
 
-def node_action_command(provider: str, lab_id: str, action: str, node: str) -> list[str]:
+def node_action_command(provider: str, lab_id: str, action: str, node: str) -> list[list[str]]:
     builder = _NODE_ACTIONS.get(provider)
     if not builder:
         raise ProviderActionError("Node actions are not supported for this provider")

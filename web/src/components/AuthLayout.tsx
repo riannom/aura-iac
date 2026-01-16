@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { applyTheme, getPreferredTheme, toggleTheme } from "../theme";
+import { AuraLogo } from "./AuraLogo";
 
 export function AuthLayout() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
@@ -22,7 +23,10 @@ export function AuthLayout() {
       </button>
       <div className="auth-content">
         <div className="auth-hero">
-          <div className="auth-brand">Aura</div>
+          <div className="auth-brand">
+            <AuraLogo className="auth-logo" />
+            Aura
+          </div>
           <h1>Aura, an IaC Canvas for network labs.</h1>
           <p>
             Drag, connect, label, and run multi-vendor topologies. Keep everything reproducible

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom";
 import { applyTheme, getPreferredTheme, toggleTheme } from "../theme";
+import { AuraLogo } from "./AuraLogo";
 
 export function Layout() {
   const token = localStorage.getItem("token");
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const navigate = useNavigate();
 
   useEffect(() => {
     const preferred = getPreferredTheme();
@@ -15,11 +17,22 @@ export function Layout() {
   function handleToggleTheme() {
     setTheme(toggleTheme());
   }
+
+  function handleLogout() {
+    localStorage.removeItem("token");
+    navigate("/auth/login");
+  }
+
+  if (!token) {
+    return <Navigate to="/auth/login" replace />;
+  }
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="brand-mark" aria-hidden="true" />
+          <div className="brand-mark" aria-hidden="true">
+            <AuraLogo className="brand-logo" />
+          </div>
           <div>
             <div className="brand-name">Aura</div>
             <div className="brand-subtitle">an IaC Canvas</div>
@@ -45,10 +58,28 @@ export function Layout() {
             </NavLink>
           )}
         </nav>
+        <div className="sidebar-section-title">Catalog</div>
+        <nav className="nav">
+          <NavLink to="/catalog">
+            <svg viewBox="0 0 24 24" className="nav-icon" aria-hidden="true">
+              <rect x="5" y="4" width="14" height="4" rx="1.5" />
+              <rect x="5" y="10" width="14" height="4" rx="1.5" />
+              <rect x="5" y="16" width="14" height="4" rx="1.5" />
+            </svg>
+            Devices & images
+          </NavLink>
+        </nav>
         <div className="sidebar-footer">
-          <button className="theme-toggle" onClick={handleToggleTheme} type="button">
-            {theme === "dark" ? "Light mode" : "Dark mode"}
-          </button>
+          <div className="sidebar-actions">
+            <button className="theme-toggle" onClick={handleToggleTheme} type="button">
+              {theme === "dark" ? "Light mode" : "Dark mode"}
+            </button>
+            {token && (
+              <button className="theme-toggle" onClick={handleLogout} type="button">
+                Log out
+              </button>
+            )}
+          </div>
         </div>
       </aside>
       <main className="main">

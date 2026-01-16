@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./netlab_gui.db"
     redis_url: str = "redis://redis:6379/0"
     netlab_workspace: str = "/var/lib/netlab-gui"
+    qcow2_store: str | None = None
+    log_forward_url: str | None = None
     netlab_provider: str = "clab"
 
     local_auth_enabled: bool = True

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
+import re
 
 import yaml
 
@@ -22,10 +24,33 @@ LINK_ATTRS = {
     "type",
 }
 
+_NODE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,15}$")
+
+
+def _safe_node_name(name: str, used: set[str]) -> str:
+    if _NODE_NAME_RE.match(name) and name not in used:
+        return name
+    clean = re.sub(r"[^A-Za-z0-9_]", "_", name).strip("_")
+    if not clean or not re.match(r"^[A-Za-z_]", clean):
+        clean = f"n_{clean}" if clean else "n"
+    for attempt in range(100):
+        suffix = hashlib.md5(f"{name}-{attempt}".encode()).hexdigest()[:4]
+        base_max = 16 - len(suffix) - 1
+        base = clean[: max(base_max, 1)]
+        candidate = f"{base}_{suffix}"
+        if candidate not in used:
+            return candidate
+    return f"n_{hashlib.md5(name.encode()).hexdigest()[:13]}"
+
 
 def graph_to_yaml(graph: TopologyGraph) -> str:
     nodes: dict[str, Any] = {}
+    name_map: dict[str, str] = {}
+    used_names: set[str] = set()
     for node in graph.nodes:
+        safe_name = _safe_node_name(node.name, used_names)
+        name_map[node.name] = safe_name
+        used_names.add(safe_name)
         node_data: dict[str, Any] = {}
         if node.device:
             node_data["device"] = node.device
@@ -38,8 +63,11 @@ def graph_to_yaml(graph: TopologyGraph) -> str:
         if node.mgmt:
             node_data["mgmt"] = node.mgmt
         if node.vars:
-            node_data.update(node.vars)
-        nodes[node.name] = node_data or None
+            vars_copy = dict(node.vars)
+            if "label" in vars_copy and "name" not in vars_copy:
+                vars_copy["name"] = vars_copy.pop("label")
+            node_data.update(vars_copy)
+        nodes[safe_name] = node_data or None
 
     links = []
     for link in graph.links:
@@ -60,10 +88,11 @@ def graph_to_yaml(graph: TopologyGraph) -> str:
             link_data["bandwidth"] = link.bandwidth
 
         for endpoint in link.endpoints:
+            endpoint_name = name_map.get(endpoint.node, endpoint.node)
             if endpoint.ifname:
-                link_data[endpoint.node] = {"ifname": endpoint.ifname}
+                link_data[endpoint_name] = {"ifname": endpoint.ifname}
             else:
-                link_data[endpoint.node] = {}
+                link_data[endpoint_name] = {}
 
         links.append(link_data)
 

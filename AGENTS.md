@@ -31,6 +31,7 @@
 ## Agent-Specific Instructions
 - If you add scripts or automation, keep them deterministic and document prerequisites.
 - Update this guide whenever new tooling or structure is introduced.
+- When UI or API changes affect running containers, rebuild and restart the Docker Compose stack using `docker compose -f docker-compose.gui.yml up -d --build`.
 
 ## Architecture Guidelines
 - Build with extensibility in mind: prefer adapter/strategy patterns over hard-coded providers or vendors.

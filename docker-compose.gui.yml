@@ -51,13 +51,15 @@ services:
       args:
         NETLAB_REF: ${NETLAB_REF:-release_26.01.01}
     command: ["rq", "worker", "netlab"]
+    network_mode: host
+    privileged: true
     depends_on:
       - redis
       - postgres
     env_file: .env
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://netlab:netlab@postgres:5432/netlab_gui}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DATABASE_URL=postgresql+psycopg://netlab:netlab@localhost:15432/netlab_gui
+      - REDIS_URL=redis://localhost:16379/0
       - NETLAB_WORKSPACE=${NETLAB_WORKSPACE:-/var/lib/netlab-gui}
       - NETLAB_PROVIDER=${NETLAB_PROVIDER:-clab}
     volumes:
@@ -70,6 +72,8 @@ services:
       - POSTGRES_USER=netlab
       - POSTGRES_PASSWORD=netlab
       - POSTGRES_DB=netlab_gui
+    ports:
+      - "15432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -80,6 +84,8 @@ services:
 
   redis:
     image: redis:7
+    ports:
+      - "16379:6379"
 
 volumes:
   netlab_workspaces:

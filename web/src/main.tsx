@@ -4,6 +4,7 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import "./styles.css";
 import { AuthLayout } from "./components/AuthLayout";
 import { Layout } from "./components/Layout";
+import { CatalogPage } from "./pages/CatalogPage";
 import { LabDetailPage } from "./pages/LabDetailPage";
 import { LabsPage } from "./pages/LabsPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -16,6 +17,7 @@ const router = createBrowserRouter([
     children: [
       { path: "labs", element: <LabsPage /> },
       { path: "labs/:labId", element: <LabDetailPage /> },
+      { path: "catalog", element: <CatalogPage /> },
       { path: "*", element: <LabsPage /> },
     ],
   },

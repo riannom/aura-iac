@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   curl \
   bash \
   git \
+  docker.io \
   iproute2 \
   openssh-client \
   && rm -rf /var/lib/apt/lists/*

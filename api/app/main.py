@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from pathlib import Path
+import os
 import shutil
+import subprocess
+import tempfile
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile, File
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +24,7 @@ from app.netlab import run_netlab_command
 from app.providers import supported_node_actions, supports_node_actions
 from app.routers import auth
 from app.storage import ensure_topology_file, lab_workspace, topology_path
+from app.image_store import qcow2_path, ensure_image_store, load_manifest, save_manifest, detect_device_from_filename
 from app.topology import graph_to_yaml, yaml_to_graph
 
 app = FastAPI(title="Netlab GUI API", version="0.1.0")
@@ -515,3 +519,120 @@ async def console_ws(websocket: WebSocket, lab_id: str, node: str) -> None:
         await process.wait()
         stdout_task.cancel()
         stderr_task.cancel()
+
+
+@app.post("/images/load")
+def load_image(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, str]:
+    suffix = Path(file.filename or "image.tar").suffix or ".tar"
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            shutil.copyfileobj(file.file, tmp_file)
+            temp_path = tmp_file.name
+        result = subprocess.run(
+            ["docker", "load", "-i", temp_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=output.strip() or "docker load failed")
+        loaded_images = []
+        for line in output.splitlines():
+            if "Loaded image:" in line:
+                loaded_images.append(line.split("Loaded image:", 1)[-1].strip())
+        manifest = load_manifest()
+        for image_ref in loaded_images:
+            device_id, version = detect_device_from_filename(image_ref)
+            manifest["images"].append(
+                {
+                    "id": f"docker:{image_ref}",
+                    "kind": "docker",
+                    "reference": image_ref,
+                    "device_id": device_id,
+                    "version": version,
+                }
+            )
+        save_manifest(manifest)
+        return {"output": output.strip() or "Image loaded", "images": loaded_images}
+    finally:
+        file.file.close()
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+@app.post("/images/qcow2")
+def upload_qcow2(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, str]:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    if not file.filename.lower().endswith((".qcow2", ".qcow")):
+        raise HTTPException(status_code=400, detail="File must be a qcow2 image")
+    destination = qcow2_path(Path(file.filename).name)
+    try:
+        with destination.open("wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+    finally:
+        file.file.close()
+    manifest = load_manifest()
+    device_id, version = detect_device_from_filename(destination.name)
+    manifest["images"].append(
+        {
+            "id": f"qcow2:{destination.name}",
+            "kind": "qcow2",
+            "reference": str(destination),
+            "device_id": device_id,
+            "version": version,
+            "filename": destination.name,
+        }
+    )
+    save_manifest(manifest)
+    return {"path": str(destination), "filename": destination.name}
+
+
+@app.get("/images/qcow2")
+def list_qcow2(
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, list[dict[str, str]]]:
+    root = ensure_image_store()
+    files = []
+    for path in sorted(root.glob("*.qcow2")) + sorted(root.glob("*.qcow")):
+        files.append({"filename": path.name, "path": str(path)})
+    return {"files": files}
+
+
+@app.get("/images/library")
+def list_image_library(
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, list[dict[str, object]]]:
+    manifest = load_manifest()
+    return {"images": manifest.get("images", [])}
+
+
+@app.post("/images/library/{image_id}")
+def update_image_library(
+    image_id: str,
+    payload: dict,
+    current_user: models.User = Depends(get_current_user),
+) -> dict[str, object]:
+    manifest = load_manifest()
+    device_id = payload.get("device_id")
+    version = payload.get("version")
+    updated = None
+    for item in manifest.get("images", []):
+        if item.get("id") == image_id:
+            item["device_id"] = device_id
+            if version is not None:
+                item["version"] = version
+            updated = item
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="Image not found")
+    save_manifest(manifest)
+    return {"image": updated}
