@@ -1,0 +1,531 @@
+"""Tests for topology parsing and multi-host analysis."""
+
+import pytest
+
+from app.schemas import (
+    GraphEndpoint,
+    GraphLink,
+    GraphNode,
+    TopologyGraph,
+)
+from app.topology import (
+    analyze_topology,
+    graph_to_yaml,
+    split_topology_by_host,
+    yaml_to_graph,
+)
+
+
+# --- Basic Topology Tests ---
+
+def test_graph_to_yaml_simple():
+    """Test converting a simple graph to YAML."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", device="linux"),
+            GraphNode(id="r2", name="r2", device="linux"),
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1"),
+                    GraphEndpoint(node="r2"),
+                ]
+            )
+        ],
+    )
+
+    yaml_str = graph_to_yaml(graph)
+    assert "r1" in yaml_str
+    assert "r2" in yaml_str
+    assert "linux" in yaml_str
+
+
+def test_yaml_to_graph_simple():
+    """Test parsing a simple YAML topology."""
+    yaml_str = """
+nodes:
+  r1:
+    device: linux
+  r2:
+    device: linux
+links:
+  - r1: {}
+    r2: {}
+"""
+    graph = yaml_to_graph(yaml_str)
+
+    assert len(graph.nodes) == 2
+    assert len(graph.links) == 1
+    assert graph.nodes[0].device == "linux"
+
+
+# --- Multi-Host Topology Analysis Tests ---
+
+def test_analyze_single_host():
+    """Test analysis of single-host topology."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", host="agent1"),
+            GraphNode(id="r2", name="r2", host="agent1"),
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="r2", ifname="eth0"),
+                ]
+            )
+        ],
+    )
+
+    analysis = analyze_topology(graph)
+
+    assert analysis.single_host is True
+    assert len(analysis.cross_host_links) == 0
+    assert "agent1" in analysis.placements
+    assert len(analysis.placements["agent1"]) == 2
+
+
+def test_analyze_multi_host():
+    """Test analysis of multi-host topology."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", host="agent1"),
+            GraphNode(id="r2", name="r2", host="agent2"),
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="r2", ifname="eth0"),
+                ]
+            )
+        ],
+    )
+
+    analysis = analyze_topology(graph)
+
+    assert analysis.single_host is False
+    assert len(analysis.cross_host_links) == 1
+    assert "agent1" in analysis.placements
+    assert "agent2" in analysis.placements
+
+    chl = analysis.cross_host_links[0]
+    assert chl.node_a == "r1"
+    assert chl.node_b == "r2"
+    assert chl.host_a == "agent1"
+    assert chl.host_b == "agent2"
+    assert chl.interface_a == "eth0"
+    assert chl.interface_b == "eth0"
+
+
+def test_analyze_default_host():
+    """Test analysis with default host for unplaced nodes."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1"),  # No host specified
+            GraphNode(id="r2", name="r2"),  # No host specified
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1"),
+                    GraphEndpoint(node="r2"),
+                ]
+            )
+        ],
+    )
+
+    analysis = analyze_topology(graph, default_host="agent1")
+
+    assert analysis.single_host is True
+    assert len(analysis.cross_host_links) == 0
+    assert "agent1" in analysis.placements
+    assert len(analysis.placements["agent1"]) == 2
+
+
+def test_analyze_mixed_placement():
+    """Test analysis with mixed explicit and default placement."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", host="agent1"),  # Explicit
+            GraphNode(id="r2", name="r2"),  # Will use default
+            GraphNode(id="r3", name="r3", host="agent2"),  # Explicit
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="r2", ifname="eth0"),
+                ]
+            ),
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r2", ifname="eth1"),
+                    GraphEndpoint(node="r3", ifname="eth0"),
+                ]
+            ),
+        ],
+    )
+
+    analysis = analyze_topology(graph, default_host="agent1")
+
+    # r1 and r2 on agent1, r3 on agent2
+    assert not analysis.single_host
+    assert len(analysis.placements["agent1"]) == 2
+    assert len(analysis.placements["agent2"]) == 1
+
+    # r2-r3 is cross-host, r1-r2 is same-host
+    assert len(analysis.cross_host_links) == 1
+    chl = analysis.cross_host_links[0]
+    assert chl.node_a == "r2"
+    assert chl.node_b == "r3"
+
+
+def test_analyze_complex_topology():
+    """Test analysis of complex multi-host topology."""
+    # Spine-leaf topology across 3 hosts
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="spine1", name="spine1", host="agent1"),
+            GraphNode(id="spine2", name="spine2", host="agent1"),
+            GraphNode(id="leaf1", name="leaf1", host="agent2"),
+            GraphNode(id="leaf2", name="leaf2", host="agent2"),
+            GraphNode(id="leaf3", name="leaf3", host="agent3"),
+            GraphNode(id="leaf4", name="leaf4", host="agent3"),
+        ],
+        links=[
+            # Spine-to-leaf links (cross-host)
+            GraphLink(endpoints=[GraphEndpoint(node="spine1", ifname="eth1"), GraphEndpoint(node="leaf1", ifname="eth1")]),
+            GraphLink(endpoints=[GraphEndpoint(node="spine1", ifname="eth2"), GraphEndpoint(node="leaf2", ifname="eth1")]),
+            GraphLink(endpoints=[GraphEndpoint(node="spine1", ifname="eth3"), GraphEndpoint(node="leaf3", ifname="eth1")]),
+            GraphLink(endpoints=[GraphEndpoint(node="spine1", ifname="eth4"), GraphEndpoint(node="leaf4", ifname="eth1")]),
+            GraphLink(endpoints=[GraphEndpoint(node="spine2", ifname="eth1"), GraphEndpoint(node="leaf1", ifname="eth2")]),
+            GraphLink(endpoints=[GraphEndpoint(node="spine2", ifname="eth2"), GraphEndpoint(node="leaf2", ifname="eth2")]),
+            GraphLink(endpoints=[GraphEndpoint(node="spine2", ifname="eth3"), GraphEndpoint(node="leaf3", ifname="eth2")]),
+            GraphLink(endpoints=[GraphEndpoint(node="spine2", ifname="eth4"), GraphEndpoint(node="leaf4", ifname="eth2")]),
+            # Spine-to-spine link (same host)
+            GraphLink(endpoints=[GraphEndpoint(node="spine1", ifname="eth5"), GraphEndpoint(node="spine2", ifname="eth5")]),
+        ],
+    )
+
+    analysis = analyze_topology(graph)
+
+    assert not analysis.single_host
+    assert len(analysis.placements) == 3  # 3 hosts
+
+    # 8 cross-host links (all spine-to-leaf links)
+    assert len(analysis.cross_host_links) == 8
+
+    # Verify placements
+    assert len(analysis.placements["agent1"]) == 2  # 2 spines
+    assert len(analysis.placements["agent2"]) == 2  # 2 leaves
+    assert len(analysis.placements["agent3"]) == 2  # 2 leaves
+
+
+# --- Topology Splitting Tests ---
+
+def test_split_topology_single_host():
+    """Test splitting a single-host topology."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", host="agent1"),
+            GraphNode(id="r2", name="r2", host="agent1"),
+        ],
+        links=[
+            GraphLink(endpoints=[GraphEndpoint(node="r1"), GraphEndpoint(node="r2")])
+        ],
+    )
+
+    analysis = analyze_topology(graph)
+    splits = split_topology_by_host(graph, analysis)
+
+    assert len(splits) == 1
+    assert "agent1" in splits
+    assert len(splits["agent1"].nodes) == 2
+    assert len(splits["agent1"].links) == 1
+
+
+def test_split_topology_multi_host():
+    """Test splitting a multi-host topology."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", host="agent1"),
+            GraphNode(id="r2", name="r2", host="agent1"),
+            GraphNode(id="r3", name="r3", host="agent2"),
+        ],
+        links=[
+            # Same-host link
+            GraphLink(endpoints=[GraphEndpoint(node="r1", ifname="eth0"), GraphEndpoint(node="r2", ifname="eth0")]),
+            # Cross-host link (should be excluded from splits)
+            GraphLink(endpoints=[GraphEndpoint(node="r2", ifname="eth1"), GraphEndpoint(node="r3", ifname="eth0")]),
+        ],
+    )
+
+    analysis = analyze_topology(graph)
+    splits = split_topology_by_host(graph, analysis)
+
+    assert len(splits) == 2
+
+    # Agent1 should have r1, r2 and the r1-r2 link
+    assert len(splits["agent1"].nodes) == 2
+    assert len(splits["agent1"].links) == 1
+    node_names = {n.name for n in splits["agent1"].nodes}
+    assert node_names == {"r1", "r2"}
+
+    # Agent2 should have only r3, no links (cross-host link excluded)
+    assert len(splits["agent2"].nodes) == 1
+    assert len(splits["agent2"].links) == 0
+    assert splits["agent2"].nodes[0].name == "r3"
+
+
+# --- External Network Tests ---
+
+def test_graph_to_yaml_with_bridge():
+    """Test converting a graph with bridge external connection to YAML."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", device="linux"),
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="br-external", type="bridge"),
+                ]
+            )
+        ],
+    )
+
+    yaml_str = graph_to_yaml(graph)
+    assert "r1" in yaml_str
+    assert "bridge:br-external" in yaml_str
+
+
+def test_graph_to_yaml_with_macvlan():
+    """Test converting a graph with macvlan external connection to YAML."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", device="linux"),
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="eth0", type="macvlan"),
+                ]
+            )
+        ],
+    )
+
+    yaml_str = graph_to_yaml(graph)
+    assert "r1" in yaml_str
+    assert "macvlan:eth0" in yaml_str
+
+
+def test_graph_to_yaml_with_host_interface():
+    """Test converting a graph with host interface connection to YAML."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", device="linux"),
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="eth1", type="host"),
+                ]
+            )
+        ],
+    )
+
+    yaml_str = graph_to_yaml(graph)
+    assert "r1" in yaml_str
+    assert "host:eth1" in yaml_str
+
+
+def test_graph_to_yaml_with_network_mode():
+    """Test converting a graph with network_mode to YAML."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", device="linux", network_mode="bridge"),
+        ],
+        links=[],
+    )
+
+    yaml_str = graph_to_yaml(graph)
+    assert "network-mode: bridge" in yaml_str
+
+
+def test_yaml_to_graph_with_bridge():
+    """Test parsing a YAML topology with bridge external connection."""
+    yaml_str = """
+nodes:
+  r1:
+    device: linux
+links:
+  - r1:
+      ifname: eth0
+    bridge:br-external: {}
+"""
+    graph = yaml_to_graph(yaml_str)
+
+    assert len(graph.nodes) == 1
+    assert len(graph.links) == 1
+
+    link = graph.links[0]
+    assert len(link.endpoints) == 2
+
+    # Find the bridge endpoint
+    bridge_ep = next((ep for ep in link.endpoints if ep.type == "bridge"), None)
+    assert bridge_ep is not None
+    assert bridge_ep.node == "br-external"
+    assert bridge_ep.type == "bridge"
+
+
+def test_yaml_to_graph_with_macvlan():
+    """Test parsing a YAML topology with macvlan external connection."""
+    yaml_str = """
+nodes:
+  r1:
+    device: linux
+links:
+  - r1:
+      ifname: eth0
+    macvlan:eth0: {}
+"""
+    graph = yaml_to_graph(yaml_str)
+
+    assert len(graph.links) == 1
+    link = graph.links[0]
+
+    macvlan_ep = next((ep for ep in link.endpoints if ep.type == "macvlan"), None)
+    assert macvlan_ep is not None
+    assert macvlan_ep.node == "eth0"
+    assert macvlan_ep.type == "macvlan"
+
+
+def test_yaml_to_graph_with_network_mode():
+    """Test parsing a YAML topology with network-mode."""
+    yaml_str = """
+nodes:
+  r1:
+    device: linux
+    network-mode: host
+links: []
+"""
+    graph = yaml_to_graph(yaml_str)
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].network_mode == "host"
+
+
+def test_yaml_to_graph_with_host_placement():
+    """Test parsing a YAML topology with host placement."""
+    yaml_str = """
+nodes:
+  r1:
+    device: linux
+    host: agent-1
+  r2:
+    device: linux
+    host: agent-2
+links: []
+"""
+    graph = yaml_to_graph(yaml_str)
+
+    assert len(graph.nodes) == 2
+    r1 = next(n for n in graph.nodes if n.name == "r1")
+    r2 = next(n for n in graph.nodes if n.name == "r2")
+    assert r1.host == "agent-1"
+    assert r2.host == "agent-2"
+
+
+def test_roundtrip_external_connection():
+    """Test that external connections survive a graph -> YAML -> graph roundtrip."""
+    original = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", device="linux", network_mode="bridge"),
+        ],
+        links=[
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="br-lan", type="bridge"),
+                ]
+            )
+        ],
+    )
+
+    yaml_str = graph_to_yaml(original)
+    parsed = yaml_to_graph(yaml_str)
+
+    # Check node
+    assert len(parsed.nodes) == 1
+    assert parsed.nodes[0].network_mode == "bridge"
+
+    # Check link
+    assert len(parsed.links) == 1
+    link = parsed.links[0]
+    bridge_ep = next((ep for ep in link.endpoints if ep.type == "bridge"), None)
+    assert bridge_ep is not None
+    assert bridge_ep.node == "br-lan"
+
+
+def test_mixed_internal_and_external_links():
+    """Test topology with both internal and external links."""
+    graph = TopologyGraph(
+        nodes=[
+            GraphNode(id="r1", name="r1", device="linux"),
+            GraphNode(id="r2", name="r2", device="linux"),
+        ],
+        links=[
+            # Internal link between r1 and r2
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth0"),
+                    GraphEndpoint(node="r2", ifname="eth0"),
+                ]
+            ),
+            # External link from r1 to bridge
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r1", ifname="eth1"),
+                    GraphEndpoint(node="br-wan", type="bridge"),
+                ]
+            ),
+            # External link from r2 to macvlan
+            GraphLink(
+                endpoints=[
+                    GraphEndpoint(node="r2", ifname="eth1"),
+                    GraphEndpoint(node="enp0s3", type="macvlan"),
+                ]
+            ),
+        ],
+    )
+
+    yaml_str = graph_to_yaml(graph)
+
+    # Verify all connections are in YAML
+    assert "r1" in yaml_str
+    assert "r2" in yaml_str
+    assert "bridge:br-wan" in yaml_str
+    assert "macvlan:enp0s3" in yaml_str
+
+    # Parse back and verify
+    parsed = yaml_to_graph(yaml_str)
+    assert len(parsed.nodes) == 2
+    assert len(parsed.links) == 3
+
+    # Count external endpoints
+    external_count = sum(
+        1 for link in parsed.links
+        for ep in link.endpoints
+        if ep.type != "node"
+    )
+    assert external_count == 2
+
+
+# To run these tests:
+# cd api && pytest tests/test_topology.py -v

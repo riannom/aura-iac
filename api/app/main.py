@@ -334,11 +334,26 @@ def update_lab_state(session: Session, lab_id: str, state: str, agent_id: str | 
         session.commit()
 
 
-async def run_agent_job(job_id: str, lab_id: str, action: str, topology_yaml: str | None = None, node_name: str | None = None):
+async def run_agent_job(
+    job_id: str,
+    lab_id: str,
+    action: str,
+    topology_yaml: str | None = None,
+    node_name: str | None = None,
+    required_provider: str = "containerlab",
+):
     """Run a job on an agent in the background.
 
     Handles errors gracefully and provides detailed error messages.
     Updates lab state based on job outcome.
+
+    Args:
+        job_id: The job ID
+        lab_id: The lab ID
+        action: Action to perform (up, down, node:start:name, etc.)
+        topology_yaml: Topology YAML for deploy actions
+        node_name: Node name for node actions
+        required_provider: Provider required for the job (default: containerlab)
     """
     session = SessionLocal()
     try:
@@ -347,15 +362,37 @@ async def run_agent_job(job_id: str, lab_id: str, action: str, topology_yaml: st
             logger.error(f"Job {job_id} not found in database")
             return
 
-        # Find a healthy agent
-        agent = await agent_client.get_healthy_agent(session)
+        lab = session.get(models.Lab, lab_id)
+        if not lab:
+            logger.error(f"Lab {lab_id} not found in database")
+            job.status = "failed"
+            job.completed_at = datetime.utcnow()
+            job.log_path = f"ERROR: Lab {lab_id} not found"
+            session.commit()
+            return
+
+        # Find a healthy agent with required capability, respecting affinity
+        agent = await agent_client.get_agent_for_lab(
+            session,
+            lab,
+            required_provider=required_provider,
+        )
         if not agent:
             job.status = "failed"
             job.completed_at = datetime.utcnow()
-            job.log_path = "ERROR: No healthy agent available.\n\nPossible causes:\n- No agents are registered\n- All agents are offline or unresponsive\n- Agent heartbeat timeout exceeded\n\nCheck agent status and connectivity."
+            job.log_path = (
+                f"ERROR: No healthy agent available.\n\n"
+                f"Required provider: {required_provider}\n\n"
+                f"Possible causes:\n"
+                f"- No agents are registered\n"
+                f"- All agents are offline or unresponsive\n"
+                f"- No agent supports the required provider\n"
+                f"- All capable agents are at capacity\n\n"
+                f"Check agent status and connectivity."
+            )
             update_lab_state(session, lab_id, "error", error="No healthy agent available")
             session.commit()
-            logger.warning(f"Job {job_id} failed: no healthy agent available")
+            logger.warning(f"Job {job_id} failed: no healthy agent available for provider {required_provider}")
             return
 
         # Update job with agent assignment and start time
@@ -484,10 +521,10 @@ async def lab_up(
 ) -> schemas.JobOut:
     lab = get_lab_or_404(lab_id, database, current_user)
 
-    # Check for healthy agent
-    agent = await agent_client.get_healthy_agent(database)
+    # Check for healthy agent with required capability, respecting affinity
+    agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
     if not agent:
-        raise HTTPException(status_code=503, detail="No healthy agent available")
+        raise HTTPException(status_code=503, detail="No healthy agent available with containerlab support")
 
     # Create job record
     job = models.Job(lab_id=lab.id, user_id=current_user.id, action="up", status="queued")
@@ -500,7 +537,7 @@ async def lab_up(
     topology_yaml = topo_path.read_text(encoding="utf-8") if topo_path.exists() else ""
 
     # Start background task
-    asyncio.create_task(run_agent_job(job.id, lab.id, "up", topology_yaml=topology_yaml))
+    asyncio.create_task(run_agent_job(job.id, lab.id, "up", topology_yaml=topology_yaml, required_provider="containerlab"))
 
     return schemas.JobOut.model_validate(job)
 
@@ -513,10 +550,11 @@ async def lab_down(
 ) -> schemas.JobOut:
     lab = get_lab_or_404(lab_id, database, current_user)
 
-    # Check for healthy agent
-    agent = await agent_client.get_healthy_agent(database)
+    # Check for healthy agent with required capability, respecting affinity
+    # For down, we must use the same agent that deployed the lab
+    agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
     if not agent:
-        raise HTTPException(status_code=503, detail="No healthy agent available")
+        raise HTTPException(status_code=503, detail="No healthy agent available with containerlab support")
 
     # Create job record
     job = models.Job(lab_id=lab.id, user_id=current_user.id, action="down", status="queued")
@@ -525,7 +563,7 @@ async def lab_down(
     database.refresh(job)
 
     # Start background task
-    asyncio.create_task(run_agent_job(job.id, lab.id, "down"))
+    asyncio.create_task(run_agent_job(job.id, lab.id, "down", required_provider="containerlab"))
 
     return schemas.JobOut.model_validate(job)
 
@@ -538,10 +576,10 @@ async def lab_restart(
 ) -> schemas.JobOut:
     lab = get_lab_or_404(lab_id, database, current_user)
 
-    # Check for healthy agent
-    agent = await agent_client.get_healthy_agent(database)
+    # Check for healthy agent with required capability, respecting affinity
+    agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
     if not agent:
-        raise HTTPException(status_code=503, detail="No healthy agent available")
+        raise HTTPException(status_code=503, detail="No healthy agent available with containerlab support")
 
     # Create job record - restart is down then up
     job = models.Job(lab_id=lab.id, user_id=current_user.id, action="restart", status="queued")
@@ -555,7 +593,7 @@ async def lab_restart(
 
     # For restart, we do down then up sequentially
     async def restart_sequence():
-        await run_agent_job(job.id, lab.id, "down")
+        await run_agent_job(job.id, lab.id, "down", required_provider="containerlab")
         # Only do up if down succeeded
         session = SessionLocal()
         try:
@@ -563,7 +601,7 @@ async def lab_restart(
             if j and j.status != "failed":
                 j.status = "running"
                 session.commit()
-                await run_agent_job(job.id, lab.id, "up", topology_yaml=topology_yaml)
+                await run_agent_job(job.id, lab.id, "up", topology_yaml=topology_yaml, required_provider="containerlab")
         finally:
             session.close()
 
@@ -585,10 +623,11 @@ async def node_action(
 
     lab = get_lab_or_404(lab_id, database, current_user)
 
-    # Check for healthy agent
-    agent = await agent_client.get_healthy_agent(database)
+    # Check for healthy agent with required capability, respecting affinity
+    # Node actions must go to the same agent running the lab
+    agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
     if not agent:
-        raise HTTPException(status_code=503, detail="No healthy agent available")
+        raise HTTPException(status_code=503, detail="No healthy agent available with containerlab support")
 
     # Create job record
     job = models.Job(lab_id=lab.id, user_id=current_user.id, action=f"node:{action}:{node}", status="queued")
@@ -597,7 +636,7 @@ async def node_action(
     database.refresh(job)
 
     # Start background task
-    asyncio.create_task(run_agent_job(job.id, lab.id, f"node:{action}:{node}"))
+    asyncio.create_task(run_agent_job(job.id, lab.id, f"node:{action}:{node}", required_provider="containerlab"))
 
     return schemas.JobOut.model_validate(job)
 
@@ -610,14 +649,16 @@ async def lab_status(
 ) -> dict:
     lab = get_lab_or_404(lab_id, database, current_user)
 
-    # Try to get status from agent
-    agent = await agent_client.get_healthy_agent(database)
+    # Try to get status from the agent managing this lab (respecting affinity)
+    agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
     if agent:
         try:
             result = await agent_client.get_lab_status_from_agent(agent, lab.id)
             return {
                 "nodes": result.get("nodes", []),
                 "error": result.get("error"),
+                "agent_id": agent.id,
+                "agent_name": agent.name,
             }
         except Exception as e:
             return {"nodes": [], "error": str(e)}
@@ -775,8 +816,8 @@ async def console_ws(websocket: WebSocket, lab_id: str, node: str) -> None:
             await websocket.close(code=1008)
             return
 
-        # Find a healthy agent
-        agent = await agent_client.get_healthy_agent(database)
+        # Find the agent managing this lab (console must go to same agent)
+        agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
         if not agent:
             await websocket.send_text("No healthy agent available\r\n")
             await websocket.close(code=1011)

@@ -56,6 +56,9 @@ class TokenOut(BaseModel):
 class GraphEndpoint(BaseModel):
     node: str
     ifname: str | None = None
+    # External connection type: "node" (default), "bridge", "macvlan", "host"
+    # When type is not "node", the node field contains the bridge/interface name
+    type: str = "node"
 
 
 class GraphLink(BaseModel):
@@ -78,12 +81,41 @@ class GraphNode(BaseModel):
     role: str | None = None
     mgmt: dict | None = None
     vars: dict | None = None
+    host: str | None = None  # Agent ID for multi-host placement
+    network_mode: str | None = None  # Container network mode (e.g., "bridge", "host", "none")
 
 
 class TopologyGraph(BaseModel):
     nodes: list[GraphNode]
     links: list[GraphLink]
     defaults: dict | None = None
+
+
+class NodePlacement(BaseModel):
+    """Placement of a node on a specific host."""
+
+    node_name: str
+    host_id: str  # Agent ID
+
+
+class CrossHostLink(BaseModel):
+    """A link that spans two different hosts."""
+
+    link_id: str  # Unique identifier for the link
+    node_a: str  # Node name on host A
+    interface_a: str  # Interface name on node A
+    host_a: str  # Agent ID for host A
+    node_b: str  # Node name on host B
+    interface_b: str  # Interface name on node B
+    host_b: str  # Agent ID for host B
+
+
+class TopologyAnalysis(BaseModel):
+    """Analysis of a topology for multi-host deployment."""
+
+    placements: dict[str, list[NodePlacement]]  # host_id -> nodes
+    cross_host_links: list[CrossHostLink]  # Links spanning hosts
+    single_host: bool  # True if all nodes on one host
 
 
 class JobOut(BaseModel):

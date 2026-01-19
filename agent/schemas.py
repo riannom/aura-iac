@@ -187,3 +187,63 @@ class CleanupOrphansResponse(BaseModel):
     """Response from orphan cleanup endpoint."""
     removed_containers: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+
+# --- Overlay Networking ---
+
+class CreateTunnelRequest(BaseModel):
+    """Controller -> Agent: Create VXLAN tunnel to another host."""
+    lab_id: str
+    link_id: str  # Unique identifier for this link (e.g., "node1:eth0-node2:eth0")
+    local_ip: str  # This agent's IP for VXLAN endpoint
+    remote_ip: str  # Remote agent's IP for VXLAN endpoint
+    vni: int | None = None  # Optional VNI (auto-allocated if not specified)
+
+
+class TunnelInfo(BaseModel):
+    """Information about a VXLAN tunnel."""
+    vni: int
+    interface_name: str
+    local_ip: str
+    remote_ip: str
+    lab_id: str
+    link_id: str
+
+
+class CreateTunnelResponse(BaseModel):
+    """Agent -> Controller: Tunnel creation result."""
+    success: bool
+    tunnel: TunnelInfo | None = None
+    error: str | None = None
+
+
+class AttachContainerRequest(BaseModel):
+    """Controller -> Agent: Attach container to overlay bridge."""
+    lab_id: str
+    link_id: str  # Which tunnel/bridge to attach to
+    container_name: str  # Docker container name
+    interface_name: str  # Interface name inside container (e.g., eth1)
+
+
+class AttachContainerResponse(BaseModel):
+    """Agent -> Controller: Attachment result."""
+    success: bool
+    error: str | None = None
+
+
+class CleanupOverlayRequest(BaseModel):
+    """Controller -> Agent: Clean up all overlay networking for a lab."""
+    lab_id: str
+
+
+class CleanupOverlayResponse(BaseModel):
+    """Agent -> Controller: Cleanup result."""
+    tunnels_deleted: int = 0
+    bridges_deleted: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
+class OverlayStatusResponse(BaseModel):
+    """Agent -> Controller: Status of all overlay networks."""
+    tunnels: list[TunnelInfo] = Field(default_factory=list)
+    bridges: list[dict[str, Any]] = Field(default_factory=list)

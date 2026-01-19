@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     enable_containerlab: bool = True
     enable_libvirt: bool = False
 
+    # Overlay networking
+    enable_vxlan: bool = True  # Enable VXLAN overlay for multi-host
+    local_ip: str = ""  # Local IP for VXLAN endpoints (auto-detect if empty)
+
     # Docker settings
     docker_socket: str = "unix:///var/run/docker.sock"
 

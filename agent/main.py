@@ -26,9 +26,15 @@ from agent.schemas import (
     AgentCapabilities,
     AgentInfo,
     AgentStatus,
+    AttachContainerRequest,
+    AttachContainerResponse,
     CleanupOrphansRequest,
     CleanupOrphansResponse,
+    CleanupOverlayRequest,
+    CleanupOverlayResponse,
     ConsoleRequest,
+    CreateTunnelRequest,
+    CreateTunnelResponse,
     DeployRequest,
     DestroyRequest,
     DiscoveredLab,
@@ -42,9 +48,11 @@ from agent.schemas import (
     NodeActionRequest,
     NodeInfo,
     NodeStatus,
+    OverlayStatusResponse,
     Provider,
     RegistrationRequest,
     RegistrationResponse,
+    TunnelInfo,
 )
 
 
@@ -57,6 +65,18 @@ _heartbeat_task: asyncio.Task | None = None
 
 # Provider instance
 _containerlab = ContainerlabProvider()
+
+# Overlay network manager (lazy initialized)
+_overlay_manager = None
+
+
+def get_overlay_manager():
+    """Lazy-initialize overlay manager."""
+    global _overlay_manager
+    if _overlay_manager is None:
+        from agent.network.overlay import OverlayManager
+        _overlay_manager = OverlayManager()
+    return _overlay_manager
 
 
 def get_workspace(lab_id: str) -> Path:
@@ -88,10 +108,14 @@ def get_capabilities() -> AgentCapabilities:
     if settings.enable_libvirt:
         providers.append(Provider.LIBVIRT)
 
+    features = ["console", "status"]
+    if settings.enable_vxlan:
+        features.append("vxlan")
+
     return AgentCapabilities(
         providers=providers,
         max_concurrent_jobs=4,
-        features=["console", "status"],
+        features=features,
     )
 
 
@@ -436,6 +460,168 @@ async def cleanup_orphans(request: CleanupOrphansRequest) -> CleanupOrphansRespo
         removed_containers=removed,
         errors=[],
     )
+
+
+# --- Overlay Networking Endpoints ---
+
+@app.post("/overlay/tunnel")
+async def create_tunnel(request: CreateTunnelRequest) -> CreateTunnelResponse:
+    """Create a VXLAN tunnel to another host.
+
+    This creates a VXLAN interface and associated bridge for
+    connecting lab nodes across hosts.
+    """
+    if not settings.enable_vxlan:
+        return CreateTunnelResponse(
+            success=False,
+            error="VXLAN overlay not enabled on this agent",
+        )
+
+    print(f"Creating tunnel: lab={request.lab_id}, link={request.link_id}, remote={request.remote_ip}")
+
+    try:
+        overlay = get_overlay_manager()
+
+        # Create VXLAN tunnel
+        tunnel = await overlay.create_tunnel(
+            lab_id=request.lab_id,
+            link_id=request.link_id,
+            local_ip=request.local_ip,
+            remote_ip=request.remote_ip,
+            vni=request.vni,
+        )
+
+        # Create bridge and attach VXLAN
+        await overlay.create_bridge(tunnel)
+
+        return CreateTunnelResponse(
+            success=True,
+            tunnel=TunnelInfo(
+                vni=tunnel.vni,
+                interface_name=tunnel.interface_name,
+                local_ip=tunnel.local_ip,
+                remote_ip=tunnel.remote_ip,
+                lab_id=tunnel.lab_id,
+                link_id=tunnel.link_id,
+            ),
+        )
+
+    except Exception as e:
+        print(f"Tunnel creation failed: {e}")
+        return CreateTunnelResponse(
+            success=False,
+            error=str(e),
+        )
+
+
+@app.post("/overlay/attach")
+async def attach_container(request: AttachContainerRequest) -> AttachContainerResponse:
+    """Attach a container to an overlay bridge.
+
+    This creates a veth pair, moves one end into the container,
+    and attaches the other to the overlay bridge.
+    """
+    if not settings.enable_vxlan:
+        return AttachContainerResponse(
+            success=False,
+            error="VXLAN overlay not enabled on this agent",
+        )
+
+    print(f"Attaching container: {request.container_name} to bridge for {request.link_id}")
+
+    try:
+        overlay = get_overlay_manager()
+
+        # Get the bridge for this link
+        bridges = await overlay.get_bridges_for_lab(request.lab_id)
+        bridge = None
+        for b in bridges:
+            if b.link_id == request.link_id:
+                bridge = b
+                break
+
+        if not bridge:
+            return AttachContainerResponse(
+                success=False,
+                error=f"No bridge found for link {request.link_id}",
+            )
+
+        # Attach container
+        success = await overlay.attach_container(
+            bridge=bridge,
+            container_name=request.container_name,
+            interface_name=request.interface_name,
+        )
+
+        if success:
+            return AttachContainerResponse(success=True)
+        else:
+            return AttachContainerResponse(
+                success=False,
+                error="Failed to attach container to bridge",
+            )
+
+    except Exception as e:
+        print(f"Container attachment failed: {e}")
+        return AttachContainerResponse(
+            success=False,
+            error=str(e),
+        )
+
+
+@app.post("/overlay/cleanup")
+async def cleanup_overlay(request: CleanupOverlayRequest) -> CleanupOverlayResponse:
+    """Clean up all overlay networking for a lab."""
+    if not settings.enable_vxlan:
+        return CleanupOverlayResponse()
+
+    print(f"Cleaning up overlay for lab: {request.lab_id}")
+
+    try:
+        overlay = get_overlay_manager()
+        result = await overlay.cleanup_lab(request.lab_id)
+
+        return CleanupOverlayResponse(
+            tunnels_deleted=result["tunnels_deleted"],
+            bridges_deleted=result["bridges_deleted"],
+            errors=result["errors"],
+        )
+
+    except Exception as e:
+        print(f"Overlay cleanup failed: {e}")
+        return CleanupOverlayResponse(errors=[str(e)])
+
+
+@app.get("/overlay/status")
+async def overlay_status() -> OverlayStatusResponse:
+    """Get status of all overlay networks on this agent."""
+    if not settings.enable_vxlan:
+        return OverlayStatusResponse()
+
+    try:
+        overlay = get_overlay_manager()
+        status = overlay.get_tunnel_status()
+
+        tunnels = [
+            TunnelInfo(
+                vni=t["vni"],
+                interface_name=t["interface"],
+                local_ip=t["local_ip"],
+                remote_ip=t["remote_ip"],
+                lab_id=t["lab_id"],
+                link_id=t["link_id"],
+            )
+            for t in status["tunnels"]
+        ]
+
+        return OverlayStatusResponse(
+            tunnels=tunnels,
+            bridges=status["bridges"],
+        )
+
+    except Exception as e:
+        print(f"Overlay status failed: {e}")
+        return OverlayStatusResponse()
 
 
 # --- Console Endpoint ---

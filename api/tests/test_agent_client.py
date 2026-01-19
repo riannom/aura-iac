@@ -225,15 +225,346 @@ def test_agent_job_error():
 class MockAgent:
     """Helper class for creating mock agents in tests."""
 
-    def __init__(self, agent_id: str, address: str, status: str = "online"):
+    def __init__(
+        self,
+        agent_id: str,
+        address: str,
+        status: str = "online",
+        capabilities: str | None = None,
+    ):
         self.id = agent_id
         self.address = address
         self.status = status
         self.last_heartbeat = datetime.utcnow()
         self.name = f"agent-{agent_id}"
-        self.capabilities = "{}"
+        self.capabilities = capabilities or '{"providers": ["containerlab"], "max_concurrent_jobs": 4}'
         self.version = "0.1.0"
         self.created_at = datetime.utcnow()
+
+
+class MockLab:
+    """Helper class for creating mock labs in tests."""
+
+    def __init__(self, lab_id: str, agent_id: str | None = None):
+        self.id = lab_id
+        self.name = f"lab-{lab_id}"
+        self.agent_id = agent_id
+        self.state = "stopped"
+        self.owner_id = "user1"
+
+
+# --- Unit Tests for Capability Parsing ---
+
+def test_parse_capabilities_valid():
+    """Test parsing valid capabilities JSON."""
+    agent = MockAgent("agent1", "localhost:8001", capabilities='{"providers": ["containerlab", "libvirt"], "max_concurrent_jobs": 8}')
+
+    caps = agent_client.parse_capabilities(agent)
+
+    assert caps["providers"] == ["containerlab", "libvirt"]
+    assert caps["max_concurrent_jobs"] == 8
+
+
+def test_parse_capabilities_empty():
+    """Test parsing empty capabilities."""
+    # Create agent directly, bypassing MockAgent default
+    agent = MagicMock()
+    agent.capabilities = ""
+
+    caps = agent_client.parse_capabilities(agent)
+
+    assert caps == {}
+
+
+def test_parse_capabilities_invalid_json():
+    """Test parsing invalid JSON returns empty dict."""
+    agent = MockAgent("agent1", "localhost:8001", capabilities="not valid json")
+
+    caps = agent_client.parse_capabilities(agent)
+
+    assert caps == {}
+
+
+def test_get_agent_providers():
+    """Test extracting provider list from agent."""
+    agent = MockAgent("agent1", "localhost:8001", capabilities='{"providers": ["containerlab", "libvirt"]}')
+
+    providers = agent_client.get_agent_providers(agent)
+
+    assert providers == ["containerlab", "libvirt"]
+
+
+def test_get_agent_providers_missing():
+    """Test extracting providers when not present."""
+    agent = MockAgent("agent1", "localhost:8001", capabilities='{}')
+
+    providers = agent_client.get_agent_providers(agent)
+
+    assert providers == []
+
+
+def test_get_agent_max_jobs():
+    """Test extracting max concurrent jobs from agent."""
+    agent = MockAgent("agent1", "localhost:8001", capabilities='{"max_concurrent_jobs": 8}')
+
+    max_jobs = agent_client.get_agent_max_jobs(agent)
+
+    assert max_jobs == 8
+
+
+def test_get_agent_max_jobs_default():
+    """Test default max concurrent jobs when not specified."""
+    agent = MockAgent("agent1", "localhost:8001", capabilities='{}')
+
+    max_jobs = agent_client.get_agent_max_jobs(agent)
+
+    assert max_jobs == 4  # Default value
+
+
+# --- Unit Tests for Active Job Counting ---
+
+def test_count_active_jobs():
+    """Test counting active jobs for an agent."""
+    mock_db = MagicMock()
+    mock_query = MagicMock()
+    mock_query.filter.return_value.count.return_value = 2
+    mock_db.query.return_value = mock_query
+
+    count = agent_client.count_active_jobs(mock_db, "agent1")
+
+    assert count == 2
+
+
+# --- Unit Tests for Multi-Agent Selection ---
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_no_agents():
+    """Test get_healthy_agent returns None when no agents exist."""
+    mock_db = MagicMock()
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = []
+    mock_db.query.return_value = mock_query
+
+    result = await agent_client.get_healthy_agent(mock_db)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_capability_filtering():
+    """Test that agents are filtered by required provider."""
+    mock_db = MagicMock()
+
+    # Create agents with different capabilities
+    agent_clab = MockAgent("agent1", "localhost:8001", capabilities='{"providers": ["containerlab"], "max_concurrent_jobs": 4}')
+    agent_libvirt = MockAgent("agent2", "localhost:8002", capabilities='{"providers": ["libvirt"], "max_concurrent_jobs": 4}')
+    agent_both = MockAgent("agent3", "localhost:8003", capabilities='{"providers": ["containerlab", "libvirt"], "max_concurrent_jobs": 4}')
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent_clab, agent_libvirt, agent_both]
+    mock_db.query.return_value = mock_query
+
+    # Mock count_active_jobs to return 0 for all agents
+    with patch.object(agent_client, 'count_active_jobs', return_value=0):
+        # Request libvirt provider
+        result = await agent_client.get_healthy_agent(mock_db, required_provider="libvirt")
+
+    # Should only return agent2 or agent3 (both support libvirt)
+    assert result in [agent_libvirt, agent_both]
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_no_matching_provider():
+    """Test that returns None when no agent supports required provider."""
+    mock_db = MagicMock()
+
+    agent = MockAgent("agent1", "localhost:8001", capabilities='{"providers": ["containerlab"]}')
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent]
+    mock_db.query.return_value = mock_query
+
+    result = await agent_client.get_healthy_agent(mock_db, required_provider="libvirt")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_exclude_agents():
+    """Test that excluded agents are not selected."""
+    mock_db = MagicMock()
+
+    agent1 = MockAgent("agent1", "localhost:8001")
+    agent2 = MockAgent("agent2", "localhost:8002")
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent2]  # agent1 excluded by query
+    mock_db.query.return_value = mock_query
+
+    with patch.object(agent_client, 'count_active_jobs', return_value=0):
+        result = await agent_client.get_healthy_agent(mock_db, exclude_agents=["agent1"])
+
+    assert result == agent2
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_affinity():
+    """Test that preferred agent is selected when available."""
+    mock_db = MagicMock()
+
+    agent1 = MockAgent("agent1", "localhost:8001")
+    agent2 = MockAgent("agent2", "localhost:8002")
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent1, agent2]
+    mock_db.query.return_value = mock_query
+
+    with patch.object(agent_client, 'count_active_jobs', return_value=0):
+        result = await agent_client.get_healthy_agent(mock_db, prefer_agent_id="agent2")
+
+    assert result == agent2
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_affinity_unavailable():
+    """Test that fallback to other agents when preferred is unavailable."""
+    mock_db = MagicMock()
+
+    agent1 = MockAgent("agent1", "localhost:8001")
+    # agent2 is not in the list (unavailable)
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent1]
+    mock_db.query.return_value = mock_query
+
+    with patch.object(agent_client, 'count_active_jobs', return_value=0):
+        result = await agent_client.get_healthy_agent(mock_db, prefer_agent_id="agent2")
+
+    # Should fall back to agent1
+    assert result == agent1
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_load_balancing():
+    """Test that least loaded agent is selected."""
+    mock_db = MagicMock()
+
+    # Both agents have same max_concurrent_jobs
+    agent1 = MockAgent("agent1", "localhost:8001", capabilities='{"providers": ["containerlab"], "max_concurrent_jobs": 4}')
+    agent2 = MockAgent("agent2", "localhost:8002", capabilities='{"providers": ["containerlab"], "max_concurrent_jobs": 4}')
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent1, agent2]
+    mock_db.query.return_value = mock_query
+
+    # agent1 has 3 jobs, agent2 has 1 job
+    def mock_count(db, agent_id):
+        return 3 if agent_id == "agent1" else 1
+
+    with patch.object(agent_client, 'count_active_jobs', side_effect=mock_count):
+        result = await agent_client.get_healthy_agent(mock_db)
+
+    # Should select agent2 (less loaded)
+    assert result == agent2
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_capacity_check():
+    """Test that agents at capacity are skipped."""
+    mock_db = MagicMock()
+
+    agent1 = MockAgent("agent1", "localhost:8001", capabilities='{"providers": ["containerlab"], "max_concurrent_jobs": 2}')
+    agent2 = MockAgent("agent2", "localhost:8002", capabilities='{"providers": ["containerlab"], "max_concurrent_jobs": 4}')
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent1, agent2]
+    mock_db.query.return_value = mock_query
+
+    # agent1 is at capacity (2/2), agent2 has room (1/4)
+    def mock_count(db, agent_id):
+        return 2 if agent_id == "agent1" else 1
+
+    with patch.object(agent_client, 'count_active_jobs', side_effect=mock_count):
+        result = await agent_client.get_healthy_agent(mock_db)
+
+    # Should select agent2 (agent1 at capacity)
+    assert result == agent2
+
+
+@pytest.mark.asyncio
+async def test_get_healthy_agent_all_at_capacity():
+    """Test that returns None when all agents at capacity."""
+    mock_db = MagicMock()
+
+    agent1 = MockAgent("agent1", "localhost:8001", capabilities='{"providers": ["containerlab"], "max_concurrent_jobs": 2}')
+    agent2 = MockAgent("agent2", "localhost:8002", capabilities='{"providers": ["containerlab"], "max_concurrent_jobs": 2}')
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent1, agent2]
+    mock_db.query.return_value = mock_query
+
+    # Both at capacity
+    with patch.object(agent_client, 'count_active_jobs', return_value=2):
+        result = await agent_client.get_healthy_agent(mock_db)
+
+    assert result is None
+
+
+# --- Unit Tests for Lab Affinity ---
+
+@pytest.mark.asyncio
+async def test_get_agent_for_lab_with_existing_agent():
+    """Test that lab's existing agent is preferred."""
+    mock_db = MagicMock()
+    lab = MockLab("lab1", agent_id="agent2")
+
+    agent1 = MockAgent("agent1", "localhost:8001")
+    agent2 = MockAgent("agent2", "localhost:8002")
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent1, agent2]
+    mock_db.query.return_value = mock_query
+
+    with patch.object(agent_client, 'count_active_jobs', return_value=0):
+        result = await agent_client.get_agent_for_lab(mock_db, lab, required_provider="containerlab")
+
+    # Should select agent2 (lab's existing agent)
+    assert result == agent2
+
+
+@pytest.mark.asyncio
+async def test_get_agent_for_lab_without_existing_agent():
+    """Test that new lab gets load-balanced agent."""
+    mock_db = MagicMock()
+    lab = MockLab("lab1", agent_id=None)
+
+    agent1 = MockAgent("agent1", "localhost:8001")
+    agent2 = MockAgent("agent2", "localhost:8002")
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [agent1, agent2]
+    mock_db.query.return_value = mock_query
+
+    # agent1 less loaded
+    def mock_count(db, agent_id):
+        return 1 if agent_id == "agent1" else 3
+
+    with patch.object(agent_client, 'count_active_jobs', side_effect=mock_count):
+        result = await agent_client.get_agent_for_lab(mock_db, lab, required_provider="containerlab")
+
+    # Should select agent1 (least loaded)
+    assert result == agent1
 
 
 # To run these tests:
