@@ -1238,8 +1238,8 @@ async def console_ws(websocket: WebSocket, lab_id: str, node: str) -> None:
         if topo_path.exists():
             try:
                 topology_yaml = topo_path.read_text(encoding="utf-8")
-                graph = topology.yaml_to_graph(topology_yaml)
-                analysis = topology.analyze_topology(graph)
+                graph = yaml_to_graph(topology_yaml)
+                analysis = analyze_topology(graph)
 
                 # Check if this is a multi-host lab and find the node's host
                 if not analysis.single_host:
@@ -1253,8 +1253,9 @@ async def console_ws(websocket: WebSocket, lab_id: str, node: str) -> None:
                                 break
                         if agent:
                             break
-            except Exception:
-                pass  # Fall back to default behavior
+            except Exception as e:
+                logger.warning(f"Console: topology parsing failed for {lab_id}: {e}")
+                # Fall back to default behavior
 
         # If not found via topology (single-host or node not found), use lab's agent
         if not agent:
