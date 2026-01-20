@@ -306,7 +306,7 @@ EOF
     fi
 
     # Start services
-    log_info "Starting controller services..."
+    log_info "Building and starting controller services (this may take a few minutes on first run)..."
     docker compose -f docker-compose.gui.yml up -d --build
 
     # Wait for API
@@ -348,8 +348,10 @@ if [ "$INSTALL_AGENT" = true ] && [ "$INSTALL_CONTROLLER" = false ]; then
     log_info "Setting up Python environment..."
     python3 -m venv $AGENT_INSTALL_DIR/venv
     source $AGENT_INSTALL_DIR/venv/bin/activate
-    pip install --quiet --upgrade pip
-    pip install --quiet -r $AGENT_INSTALL_DIR/repo/agent/requirements.txt
+    log_info "Upgrading pip..."
+    pip install --upgrade pip
+    log_info "Installing Python dependencies (this may take a minute)..."
+    pip install -r $AGENT_INSTALL_DIR/repo/agent/requirements.txt
 
     # Config
     cat > $AGENT_INSTALL_DIR/agent.env << EOF
