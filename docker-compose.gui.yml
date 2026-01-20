@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   web:
     build:
@@ -21,14 +19,22 @@ services:
     depends_on:
       - postgres
       - redis
-    env_file: .env
     environment:
+      # Database
       - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg://netlab:netlab@postgres:5432/netlab_gui}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      # Workspace
       - NETLAB_WORKSPACE=${NETLAB_WORKSPACE:-/var/lib/netlab-gui}
       - NETLAB_PROVIDER=${NETLAB_PROVIDER:-clab}
+      # Auth
       - LOCAL_AUTH_ENABLED=${LOCAL_AUTH_ENABLED:-true}
+      - JWT_SECRET=${JWT_SECRET:-CHANGE_ME_IN_PRODUCTION}
+      - SESSION_SECRET=${SESSION_SECRET:-CHANGE_ME_IN_PRODUCTION}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # Limits
       - MAX_CONCURRENT_JOBS_PER_USER=${MAX_CONCURRENT_JOBS_PER_USER:-2}
+      # OIDC (optional)
       - OIDC_ISSUER_URL=${OIDC_ISSUER_URL:-}
       - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
       - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
@@ -56,12 +62,12 @@ services:
     depends_on:
       - redis
       - postgres
-    env_file: .env
     environment:
       - DATABASE_URL=postgresql+psycopg://netlab:netlab@localhost:15432/netlab_gui
       - REDIS_URL=redis://localhost:16379/0
       - NETLAB_WORKSPACE=${NETLAB_WORKSPACE:-/var/lib/netlab-gui}
       - NETLAB_PROVIDER=${NETLAB_PROVIDER:-clab}
+      - JWT_SECRET=${JWT_SECRET:-CHANGE_ME_IN_PRODUCTION}
     volumes:
       - netlab_workspaces:/var/lib/netlab-gui
       - /var/run/docker.sock:/var/run/docker.sock
@@ -87,6 +93,7 @@ services:
     ports:
       - "16379:6379"
 
+  # Optional: Local agent (disable with --scale agent=0 for multi-host setups)
   agent:
     build:
       context: .
@@ -96,9 +103,10 @@ services:
     depends_on:
       - api
     environment:
-      - AURA_AGENT_AGENT_NAME=local-agent
-      - AURA_AGENT_AGENT_PORT=8001
+      - AURA_AGENT_AGENT_NAME=${AURA_AGENT_NAME:-local-agent}
+      - AURA_AGENT_AGENT_PORT=${AURA_AGENT_PORT:-8001}
       - AURA_AGENT_CONTROLLER_URL=http://localhost:8000
+      - AURA_AGENT_LOCAL_IP=${AURA_AGENT_LOCAL_IP:-}
       - AURA_AGENT_ENABLE_CONTAINERLAB=true
       - AURA_AGENT_WORKSPACE_PATH=/var/lib/aura-agent
     volumes:
