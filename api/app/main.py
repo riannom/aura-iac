@@ -1274,6 +1274,8 @@ async def console_ws(websocket: WebSocket, lab_id: str, node: str) -> None:
     # Connect to agent WebSocket and proxy
     import websockets
 
+    logger.info(f"Console: connecting to agent at {agent_ws_url}")
+
     try:
         async with websockets.connect(agent_ws_url) as agent_ws:
             async def forward_to_client():
@@ -1325,7 +1327,11 @@ async def console_ws(websocket: WebSocket, lab_id: str, node: str) -> None:
                 pass
 
     except Exception as e:
-        await websocket.send_text(f"Console connection failed: {e}\r\n")
+        logger.error(f"Console connection failed to {agent_ws_url}: {e}")
+        try:
+            await websocket.send_text(f"Console connection failed: {e}\r\n")
+        except Exception:
+            pass
 
     try:
         await websocket.close()
