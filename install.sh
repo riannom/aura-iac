@@ -298,7 +298,7 @@ WEB_PORT=8080
 AURA_AGENT_NAME=local-agent
 AURA_AGENT_LOCAL_IP=$LOCAL_IP
 EOF
-        chmod 600 .env
+        chmod 644 .env
         log_info "Generated .env with admin password: $ADMIN_PASS"
     else
         log_info "Using existing .env configuration"
