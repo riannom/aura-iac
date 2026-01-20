@@ -179,9 +179,14 @@ OIDC_CLIENT_SECRET=
 OIDC_REDIRECT_URI=http://localhost:$API_PORT/auth/oidc/callback
 OIDC_SCOPES=openid profile email
 OIDC_APP_REDIRECT_URL=http://localhost:$WEB_PORT/auth/callback
+
+# Local agent (built into docker-compose)
+AURA_AGENT_NAME=local-agent
+AURA_AGENT_LOCAL_IP=$LOCAL_IP
 EOF
 
-chmod 600 $INSTALL_DIR/.env
+# Make readable by docker group (or use 600 and run with sudo for tighter security)
+chmod 644 $INSTALL_DIR/.env
 
 # Build and start containers
 log_info "Building and starting containers (this may take a few minutes)..."
