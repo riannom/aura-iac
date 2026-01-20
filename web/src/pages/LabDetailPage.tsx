@@ -644,9 +644,9 @@ export function LabDetailPage() {
     }
     wsUrl = `${wsUrl.replace(/\/$/, "")}/labs/${labId}/nodes/${encodeURIComponent(nodeName)}/console`;
     const socket = new WebSocket(wsUrl);
+    socket.binaryType = "arraybuffer";
     socket.onmessage = (event) => {
-      terminalRef.current?.write(event.data);
-      setConsoleOutput((prev) => `${prev}${event.data}`);
+      handleConsoleMessage(event.data);
     };
     socket.onclose = () => {
       terminalRef.current?.writeln("\n[console disconnected]\n");
@@ -657,6 +657,29 @@ export function LabDetailPage() {
     };
     consoleSocket.current = socket;
     setContextMenu(null);
+  }
+
+  function handleConsoleMessage(data: unknown) {
+    if (typeof data === "string") {
+      terminalRef.current?.write(data);
+      setConsoleOutput((prev) => `${prev}${data}`);
+      return;
+    }
+
+    if (data instanceof ArrayBuffer) {
+      const text = new TextDecoder().decode(data);
+      terminalRef.current?.write(text);
+      setConsoleOutput((prev) => `${prev}${text}`);
+      return;
+    }
+
+    if (data instanceof Blob) {
+      data.arrayBuffer().then((buffer) => {
+        const text = new TextDecoder().decode(buffer);
+        terminalRef.current?.write(text);
+        setConsoleOutput((prev) => `${prev}${text}`);
+      });
+    }
   }
 
   function connectConsole() {
@@ -674,9 +697,9 @@ export function LabDetailPage() {
     }
     wsUrl = `${wsUrl.replace(/\/$/, "")}/labs/${labId}/nodes/${encodeURIComponent(nodeName)}/console`;
     const socket = new WebSocket(wsUrl);
+    socket.binaryType = "arraybuffer";
     socket.onmessage = (event) => {
-      terminalRef.current?.write(event.data);
-      setConsoleOutput((prev) => `${prev}${event.data}`);
+      handleConsoleMessage(event.data);
     };
     socket.onclose = () => {
       terminalRef.current?.writeln("\n[console disconnected]\n");
