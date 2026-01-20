@@ -360,9 +360,11 @@ class OverlayManager:
                 logger.error(f"Could not get PID for container {container_name}")
                 return False
 
-            # Create unique veth names
-            veth_host = f"veth{bridge.vni}h"[:15]  # Max 15 chars for interface names
-            veth_cont = f"veth{bridge.vni}c"[:15]
+            # Create unique veth names with random suffix to ensure unique MACs
+            import secrets
+            suffix = secrets.token_hex(2)  # 4 hex chars
+            veth_host = f"v{bridge.vni % 10000}{suffix}h"[:15]  # Max 15 chars
+            veth_cont = f"v{bridge.vni % 10000}{suffix}c"[:15]
 
             # Delete if exists
             await self._run_cmd(["ip", "link", "delete", veth_host])
