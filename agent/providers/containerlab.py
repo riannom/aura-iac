@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import docker
+import yaml
 from docker.errors import NotFound, APIError
 
 from agent.providers.base import (
@@ -58,6 +59,29 @@ class ContainerlabProvider(Provider):
     def _topology_path(self, workspace: Path) -> Path:
         """Get path to topology file in workspace."""
         return workspace / "topology.clab.yml"
+
+    def _strip_aura_fields(self, topology_yaml: str) -> str:
+        """Strip Aura-specific fields (like 'host') that containerlab doesn't understand.
+
+        The 'host' field is used by Aura for multi-host placement but is not
+        a valid containerlab field.
+        """
+        try:
+            topo = yaml.safe_load(topology_yaml)
+            if not topo:
+                return topology_yaml
+
+            # Strip 'host' field from nodes
+            nodes = topo.get("topology", {}).get("nodes", {})
+            if isinstance(nodes, dict):
+                for node_name, node_config in nodes.items():
+                    if isinstance(node_config, dict) and "host" in node_config:
+                        del node_config["host"]
+
+            return yaml.dump(topo, default_flow_style=False)
+        except Exception as e:
+            logger.warning(f"Failed to strip Aura fields from topology: {e}")
+            return topology_yaml
 
     async def _run_clab(
         self,
@@ -172,9 +196,12 @@ class ContainerlabProvider(Provider):
         # Ensure workspace exists
         workspace.mkdir(parents=True, exist_ok=True)
 
+        # Strip Aura-specific fields (like 'host') before writing
+        clean_topology = self._strip_aura_fields(topology_yaml)
+
         # Write topology file
         topo_path = self._topology_path(workspace)
-        topo_path.write_text(topology_yaml, encoding="utf-8")
+        topo_path.write_text(clean_topology, encoding="utf-8")
 
         logger.info(f"Deploying lab {lab_id} from {topo_path}")
 
