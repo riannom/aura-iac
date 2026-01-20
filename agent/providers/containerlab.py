@@ -60,36 +60,64 @@ class ContainerlabProvider(Provider):
         """Get path to topology file in workspace."""
         return workspace / "topology.clab.yml"
 
-    def _strip_aura_fields(self, topology_yaml: str) -> str:
-        """Strip Aura-specific fields (like 'host') that containerlab doesn't understand.
+    def _strip_aura_fields(self, topology_yaml: str, lab_id: str = "") -> str:
+        """Strip Aura-specific fields and convert to containerlab format.
 
         The 'host' field is used by Aura for multi-host placement but is not
         a valid containerlab field.
 
-        Handles both formats:
-        - GUI format: {nodes: {...}, links: [...]}
-        - Containerlab format: {topology: {nodes: {...}, links: [...]}}
+        Also wraps flat topology in containerlab format if needed:
+        - Input: {nodes: {...}, links: [...]}
+        - Output: {name: lab-id, topology: {nodes: {...}, links: [...]}}
         """
         try:
             topo = yaml.safe_load(topology_yaml)
             if not topo:
                 return topology_yaml
 
-            # Strip 'host' field from nodes - handle both YAML formats
-            # Format 1: nodes at top level (from GUI)
-            nodes = topo.get("nodes", {})
-            # Format 2: nodes under 'topology' key (containerlab native format)
-            if not nodes:
+            # Check if already in containerlab format
+            if "topology" in topo:
+                # Already wrapped - just strip host fields
                 nodes = topo.get("topology", {}).get("nodes", {})
+                if isinstance(nodes, dict):
+                    for node_name, node_config in nodes.items():
+                        if isinstance(node_config, dict) and "host" in node_config:
+                            del node_config["host"]
+                return yaml.dump(topo, default_flow_style=False)
 
+            # Flat format - need to wrap for containerlab
+            nodes = topo.get("nodes", {})
+            links = topo.get("links", [])
+            defaults = topo.get("defaults", {})
+
+            # Strip 'host' field from nodes
             if isinstance(nodes, dict):
                 for node_name, node_config in nodes.items():
                     if isinstance(node_config, dict) and "host" in node_config:
                         del node_config["host"]
 
-            return yaml.dump(topo, default_flow_style=False)
+            # Build containerlab format
+            import re
+            safe_lab_id = re.sub(r'[^a-zA-Z0-9_-]', '', lab_id)[:20] or "lab"
+
+            clab_topo = {
+                "name": safe_lab_id,
+                "topology": {
+                    "nodes": nodes,
+                }
+            }
+
+            # Only add links if present
+            if links:
+                clab_topo["topology"]["links"] = links
+
+            # Add defaults if present
+            if defaults:
+                clab_topo["topology"]["defaults"] = defaults
+
+            return yaml.dump(clab_topo, default_flow_style=False)
         except Exception as e:
-            logger.warning(f"Failed to strip Aura fields from topology: {e}")
+            logger.warning(f"Failed to process topology: {e}")
             return topology_yaml
 
     async def _run_clab(
@@ -205,8 +233,8 @@ class ContainerlabProvider(Provider):
         # Ensure workspace exists
         workspace.mkdir(parents=True, exist_ok=True)
 
-        # Strip Aura-specific fields (like 'host') before writing
-        clean_topology = self._strip_aura_fields(topology_yaml)
+        # Strip Aura-specific fields and convert to containerlab format
+        clean_topology = self._strip_aura_fields(topology_yaml, lab_id)
 
         # Write topology file
         topo_path = self._topology_path(workspace)
