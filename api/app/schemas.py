@@ -59,6 +59,9 @@ class GraphEndpoint(BaseModel):
     # External connection type: "node" (default), "bridge", "macvlan", "host"
     # When type is not "node", the node field contains the bridge/interface name
     type: str = "node"
+    # IP address for this interface (CIDR format, e.g., "10.0.0.1/24")
+    ipv4: str | None = None
+    ipv6: str | None = None
 
 
 class GraphLink(BaseModel):
@@ -105,9 +108,11 @@ class CrossHostLink(BaseModel):
     node_a: str  # Node name on host A
     interface_a: str  # Interface name on node A
     host_a: str  # Agent ID for host A
+    ip_a: str | None = None  # IP address for node A's interface (CIDR format)
     node_b: str  # Node name on host B
     interface_b: str  # Interface name on node B
     host_b: str  # Agent ID for host B
+    ip_b: str | None = None  # IP address for node B's interface (CIDR format)
 
 
 class TopologyAnalysis(BaseModel):

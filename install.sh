@@ -216,12 +216,27 @@ fi
 
 # Validate: agent-only needs controller URL
 if [ "$INSTALL_AGENT" = true ] && [ "$INSTALL_CONTROLLER" = false ] && [ -z "$CONTROLLER_URL" ]; then
-    echo ""
-    echo "Enter the controller URL (e.g., http://192.168.1.100:8000)"
-    echo -n "Controller URL: "
-    read CONTROLLER_URL < /dev/tty || true
+    # Check if we can read interactively
+    if [ -t 0 ] || [ -e /dev/tty ]; then
+        echo ""
+        echo "Enter the controller URL (e.g., http://192.168.1.100:8000)"
+        echo -n "Controller URL: "
+        read CONTROLLER_URL < /dev/tty 2>/dev/null || true
+    fi
+
     if [ -z "$CONTROLLER_URL" ]; then
         log_error "Controller URL is required for standalone agent"
+        echo ""
+        echo "When installing via curl pipe, use --controller-url:"
+        echo ""
+        echo "  curl -fsSL https://raw.githubusercontent.com/riannom/aura-iac/main/install.sh | \\"
+        echo "    sudo bash -s -- --agent --controller-url http://CONTROLLER_IP:8000 --name agent-name"
+        echo ""
+        echo "Or download first, then run interactively:"
+        echo ""
+        echo "  curl -fsSL https://raw.githubusercontent.com/riannom/aura-iac/main/install.sh -o install.sh"
+        echo "  sudo bash install.sh --agent"
+        echo ""
         exit 1
     fi
 fi

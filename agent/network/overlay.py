@@ -334,6 +334,7 @@ class OverlayManager:
         bridge: OverlayBridge,
         container_name: str,
         interface_name: str,
+        ip_address: str | None = None,
     ) -> bool:
         """Attach a container interface to the overlay bridge.
 
@@ -344,6 +345,7 @@ class OverlayManager:
             bridge: The bridge to attach to
             container_name: Docker container name
             interface_name: Interface name inside container (e.g., eth1)
+            ip_address: Optional IP address in CIDR format (e.g., "10.0.0.1/24")
 
         Returns:
             True if attached successfully
@@ -405,6 +407,17 @@ class OverlayManager:
                 "nsenter", "-t", str(pid), "-n",
                 "ip", "link", "set", interface_name, "up"
             ])
+
+            # Configure IP address if provided
+            if ip_address:
+                code, _, stderr = await self._run_cmd([
+                    "nsenter", "-t", str(pid), "-n",
+                    "ip", "addr", "add", ip_address, "dev", interface_name
+                ])
+                if code != 0:
+                    logger.warning(f"Failed to configure IP {ip_address} on {interface_name}: {stderr}")
+                else:
+                    logger.info(f"Configured IP {ip_address} on {interface_name}")
 
             # Track the veth pair
             bridge.veth_pairs.append((veth_host, interface_name))

@@ -554,6 +554,7 @@ async def attach_container(request: AttachContainerRequest) -> AttachContainerRe
             bridge=bridge,
             container_name=request.container_name,
             interface_name=request.interface_name,
+            ip_address=request.ip_address,
         )
 
         if success:

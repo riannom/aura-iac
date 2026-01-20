@@ -1,6 +1,6 @@
 # Aura-IAC TODO
 
-## Current Status (2026-01-20)
+## Current Status (2026-01-19)
 
 ### Working
 - [x] Unified installer (`install.sh`) - handles controller, agent, or both
@@ -12,10 +12,15 @@
 - [x] Multi-host deployment (nodes go to correct agents based on `host` field)
 - [x] VXLAN overlay networking between hosts (tested and verified)
 - [x] Unique MAC addresses for overlay interfaces (fixed 2026-01-20)
+- [x] Automatic IP assignment on overlay interfaces (from topology)
+- [x] Stale agent cleanup (marks agents offline after 90s without heartbeat)
+- [x] Console access for multi-host labs (routes to correct agent)
 
 ### Not Working / Incomplete
-- [ ] Automatic IP assignment on overlay interfaces (manual config required)
-- [ ] Stale agent cleanup (old registrations linger - use `--fresh` to reset)
+- [ ] Console access not tested end-to-end (code reviewed, enhanced for multi-host)
+
+### Improved (Workarounds)
+- [x] Agent installer interactive mode - gives helpful error with correct command when piped
 
 ---
 
@@ -49,7 +54,7 @@ The multi-host deployment is fully implemented and tested:
 
 ### Usage
 
-Create a topology with `host:` field on nodes:
+Create a topology with `host:` and `ipv4:` fields:
 
 ```yaml
 nodes:
@@ -64,63 +69,118 @@ nodes:
 links:
   - r1:
       ifname: eth1
+      ipv4: 10.0.0.1/24
     r2:
       ifname: eth1
+      ipv4: 10.0.0.2/24
 ```
 
 The system will:
 1. Deploy r1 to local-agent, r2 to host-b
 2. Create VXLAN tunnel between agents (VNI auto-allocated)
 3. Attach container interfaces to overlay bridge
-
-**Note:** IPs must be configured manually on overlay interfaces:
-```bash
-docker exec clab-xxx-r1 ip addr add 10.0.0.1/24 dev eth1
-docker exec clab-xxx-r2 ip addr add 10.0.0.2/24 dev eth1
-```
+4. Configure IP addresses automatically from topology
 
 ---
 
-## Priority 2: Automatic IP Assignment on Overlay Interfaces
+## Priority 2: Automatic IP Assignment ✅ COMPLETE
 
 **Goal:** Automatically assign IP addresses to cross-host link interfaces
 
-### Current Behavior
-- Overlay interfaces (eth1) are created but have no IP
-- Users must manually assign IPs after deployment
+### Implementation (Completed 2026-01-19)
 
-### Options
-1. Parse IP config from topology (if containerlab supports it)
-2. Auto-assign IPs based on link index (10.0.X.1/24, 10.0.X.2/24)
-3. Add IP config to topology schema
+IP addresses are now parsed from the topology YAML and configured automatically:
+
+1. **Schema Updates**
+   - `GraphEndpoint` now has `ipv4` and `ipv6` fields
+   - `CrossHostLink` now has `ip_a` and `ip_b` fields
+
+2. **Topology Parsing** (`api/app/topology.py`)
+   - `_parse_link_item()` extracts `ipv4`/`ipv6` from link endpoints
+   - `analyze_topology()` includes IPs in `CrossHostLink` objects
+
+3. **Agent Configuration** (`agent/network/overlay.py`)
+   - `attach_container()` accepts optional `ip_address` parameter
+   - Uses `nsenter` to configure IP inside container namespace
+
+4. **Data Flow**
+   - Controller extracts IPs from topology
+   - Passes IPs through `setup_cross_host_link()`
+   - Agent configures IPs after attaching container to bridge
+
+### Usage
+
+Specify IPs in your topology:
+
+```yaml
+links:
+  - r1:
+      ifname: eth1
+      ipv4: 192.168.100.1/30
+    r2:
+      ifname: eth1
+      ipv4: 192.168.100.2/30
+```
+
+IPs are configured automatically during deployment - no manual configuration needed.
 
 ---
 
-## Priority 3: Stale Agent Cleanup
+## Priority 3: Stale Agent Cleanup ✅ COMPLETE
 
 **Goal:** Agents that stop sending heartbeats should be marked "offline"
 
-### Current Workaround
-Use `--fresh` flag to get a clean database:
-```bash
-curl ... | sudo bash -s -- --fresh
-```
+### Implementation (Completed 2026-01-19)
 
-### Investigation Needed
-- Check `agent_health_monitor()` in `api/app/main.py`
-- Verify `update_stale_agents()` in `api/app/agent_client.py`
-- May be a timing issue or database query bug
+Fixed timezone-aware datetime handling and NULL heartbeat edge case:
+
+1. **Timezone Fix**
+   - Changed from `datetime.utcnow()` to `datetime.now(timezone.utc)`
+   - Applied to all heartbeat comparisons and assignments
+
+2. **NULL Heartbeat Handling**
+   - `update_stale_agents()` now marks agents offline if `last_heartbeat` is NULL
+   - Catches agents that registered but never sent a heartbeat
+
+3. **Files Changed**
+   - `api/app/agent_client.py` - Fixed datetime comparisons
+   - `api/app/routers/agents.py` - Fixed datetime assignments
+
+### Behavior
+
+- Agents are marked offline if:
+  - `last_heartbeat` is older than 90 seconds, OR
+  - `last_heartbeat` is NULL
+- Health check runs every 30 seconds
 
 ---
 
-## Priority 4: Console Access via Web UI
+## Priority 4: Console Access ✅ ENHANCED
 
 **Goal:** WebSocket console access to nodes regardless of which host they're on
 
-### Current Status
-- Console proxy exists in `api/app/main.py` (`console_ws` function)
-- Agent console handler exists in `agent/console/docker_exec.py`
-- Not tested end-to-end
+### Implementation (Completed 2026-01-19)
+
+Enhanced console proxy for multi-host support:
+
+1. **Multi-Host Routing** (`api/app/main.py:console_ws()`)
+   - Reads lab topology to determine which agent hosts the node
+   - Routes console WebSocket to the correct agent
+   - Falls back to lab's primary agent for single-host labs
+
+2. **Components**
+   - Controller proxy: `api/app/main.py` (`console_ws` function)
+   - Agent handler: `agent/console/docker_exec.py` (`DockerConsole` class)
+   - Agent endpoint: `agent/main.py` (`/console/{lab_id}/{node_name}`)
+
+### Usage
+
+Connect to console via WebSocket:
+```
+ws://controller:8000/labs/{lab_id}/nodes/{node_name}/console
+```
+
+For multi-host labs, the controller automatically routes to the correct agent.
 
 ---
 
@@ -198,11 +258,11 @@ LAB_ID=$(curl -s -X POST http://localhost:8000/labs \
   -H "Content-Type: application/json" \
   -d '{"name": "test-lab"}' | jq -r '.id')
 
-# Import multi-host topology
+# Import multi-host topology with IPs
 curl -s -X POST "http://localhost:8000/labs/${LAB_ID}/import-yaml" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"content": "nodes:\n  r1:\n    kind: linux\n    image: alpine:latest\n    host: local-agent\n  r2:\n    kind: linux\n    image: alpine:latest\n    host: host-b\nlinks:\n  - r1:\n      ifname: eth1\n    r2:\n      ifname: eth1"}'
+  -d '{"content": "nodes:\n  r1:\n    kind: linux\n    image: alpine:latest\n    host: local-agent\n  r2:\n    kind: linux\n    image: alpine:latest\n    host: host-b\nlinks:\n  - r1:\n      ifname: eth1\n      ipv4: 10.0.0.1/24\n    r2:\n      ifname: eth1\n      ipv4: 10.0.0.2/24"}'
 
 # Deploy lab
 curl -s -X POST "http://localhost:8000/labs/${LAB_ID}/up" \
@@ -240,6 +300,7 @@ install.sh                # Handles controller, agent, or both
 api/app/main.py           # Main API, job dispatch, multi-host orchestration
 api/app/agent_client.py   # Agent communication, health checks, overlay setup
 api/app/topology.py       # Topology parsing, analysis, splitting
+api/app/schemas.py        # Data models including CrossHostLink with IPs
 api/app/models.py         # Database models (Host, Lab, Job, etc.)
 ```
 
@@ -247,6 +308,7 @@ api/app/models.py         # Database models (Host, Lab, Job, etc.)
 ```
 agent/main.py                    # Agent server, registration, heartbeat
 agent/providers/containerlab.py  # Containerlab deploy/destroy
-agent/network/overlay.py         # VXLAN overlay management
+agent/network/overlay.py         # VXLAN overlay management with IP config
 agent/console/docker_exec.py     # Console access via docker exec
+agent/schemas.py                 # Agent request/response schemas
 ```

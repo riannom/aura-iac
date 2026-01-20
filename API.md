@@ -139,7 +139,8 @@ links:
 
 ### Multi-Host Topology
 
-Add `host: <agent-name>` to specify which agent deploys each node:
+Add `host: <agent-name>` to specify which agent deploys each node.
+Add `ipv4:` to link endpoints for automatic IP configuration:
 
 ```yaml
 nodes:
@@ -154,9 +155,17 @@ nodes:
 links:
   - r1:
       ifname: eth1
+      ipv4: 10.0.0.1/24
     r2:
       ifname: eth1
+      ipv4: 10.0.0.2/24
 ```
+
+When deployed, the system will:
+1. Deploy `r1` on `local-agent`, `r2` on `host-b`
+2. Create a VXLAN tunnel between the agents
+3. Create veth pairs and attach containers to the overlay bridge
+4. Configure the IP addresses automatically on `eth1`
 
 ### Important Fields
 
@@ -168,14 +177,16 @@ links:
 
 ### Link Format
 
-Links use the containerlab format:
+Links use the containerlab format with optional IP configuration:
 
 ```yaml
 links:
   - <node1>:
       ifname: <interface>
+      ipv4: <ip/prefix>   # Optional: auto-configured on cross-host links
     <node2>:
       ifname: <interface>
+      ipv4: <ip/prefix>   # Optional: auto-configured on cross-host links
 ```
 
 **NOT** the `endpoints` format:
@@ -206,14 +217,14 @@ LAB_ID=$(curl -s -X POST http://localhost:8000/labs \
   -d '{"name": "test-lab"}' | jq -r '.id')
 ```
 
-### 3. Import multi-host topology
+### 3. Import multi-host topology with IPs
 
 ```bash
 curl -s -X POST "http://localhost:8000/labs/${LAB_ID}/import-yaml" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "content": "nodes:\n  r1:\n    kind: linux\n    image: alpine:latest\n    host: local-agent\n  r2:\n    kind: linux\n    image: alpine:latest\n    host: host-b\nlinks:\n  - r1:\n      ifname: eth1\n    r2:\n      ifname: eth1"
+    "content": "nodes:\n  r1:\n    kind: linux\n    image: alpine:latest\n    host: local-agent\n  r2:\n    kind: linux\n    image: alpine:latest\n    host: host-b\nlinks:\n  - r1:\n      ifname: eth1\n      ipv4: 10.0.0.1/24\n    r2:\n      ifname: eth1\n      ipv4: 10.0.0.2/24"
   }'
 ```
 
@@ -224,6 +235,11 @@ curl -s -X POST "http://localhost:8000/labs/${LAB_ID}/up" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+The deployment will:
+- Deploy nodes to their assigned agents
+- Set up VXLAN overlay between hosts
+- Configure IP addresses automatically from the topology
+
 ### 5. Check status
 
 ```bash
@@ -231,14 +247,11 @@ curl -s "http://localhost:8000/labs/${LAB_ID}/jobs" \
   -H "Authorization: Bearer $TOKEN" | jq '.jobs[0]'
 ```
 
-### 6. Configure overlay IPs (manual step for multi-host)
+### 6. Test connectivity
 
 ```bash
-# On Host A
-docker exec clab-<lab-id>-r1 ip addr add 10.0.0.1/24 dev eth1
-
-# On Host B
-docker exec clab-<lab-id>-r2 ip addr add 10.0.0.2/24 dev eth1
+# Ping from r1 to r2 across hosts
+docker exec clab-<lab-id>-r1 ping -c 3 10.0.0.2
 ```
 
 ### 7. Destroy when done

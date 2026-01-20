@@ -223,6 +223,7 @@ class AttachContainerRequest(BaseModel):
     link_id: str  # Which tunnel/bridge to attach to
     container_name: str  # Docker container name
     interface_name: str  # Interface name inside container (e.g., eth1)
+    ip_address: str | None = None  # Optional IP address (CIDR format, e.g., "10.0.0.1/24")
 
 
 class AttachContainerResponse(BaseModel):

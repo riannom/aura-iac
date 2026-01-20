@@ -678,6 +678,8 @@ async def run_multihost_deploy(
                     interface_a=chl.interface_a,
                     node_b=container_b,
                     interface_b=chl.interface_b,
+                    ip_a=chl.ip_a,
+                    ip_b=chl.ip_b,
                 )
 
                 if result.get("success"):
@@ -1230,8 +1232,34 @@ async def console_ws(websocket: WebSocket, lab_id: str, node: str) -> None:
             await websocket.close(code=1008)
             return
 
-        # Find the agent managing this lab (console must go to same agent)
-        agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
+        # For multi-host labs, find which agent has the specific node
+        agent = None
+        topo_path = topology_path(lab.id)
+        if topo_path.exists():
+            try:
+                topology_yaml = topo_path.read_text(encoding="utf-8")
+                graph = topology.yaml_to_graph(topology_yaml)
+                analysis = topology.analyze_topology(graph)
+
+                # Check if this is a multi-host lab and find the node's host
+                if not analysis.single_host:
+                    for host_id, placements in analysis.placements.items():
+                        for p in placements:
+                            if p.node_name == node:
+                                # Found the host for this node, get the agent
+                                agent = await agent_client.get_agent_by_name(
+                                    database, host_id, required_provider="containerlab"
+                                )
+                                break
+                        if agent:
+                            break
+            except Exception:
+                pass  # Fall back to default behavior
+
+        # If not found via topology (single-host or node not found), use lab's agent
+        if not agent:
+            agent = await agent_client.get_agent_for_lab(database, lab, required_provider="containerlab")
+
         if not agent:
             await websocket.send_text("No healthy agent available\r\n")
             await websocket.close(code=1011)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -95,7 +95,7 @@ def register_agent(
         existing.status = "online"
         existing.capabilities = json.dumps(agent.capabilities.model_dump())
         existing.version = agent.version
-        existing.last_heartbeat = datetime.utcnow()
+        existing.last_heartbeat = datetime.now(timezone.utc)
         database.commit()
 
         return RegistrationResponse(
@@ -112,7 +112,7 @@ def register_agent(
         status="online",
         capabilities=json.dumps(agent.capabilities.model_dump()),
         version=agent.version,
-        last_heartbeat=datetime.utcnow(),
+        last_heartbeat=datetime.now(timezone.utc),
     )
     database.add(host)
     database.commit()
@@ -138,7 +138,7 @@ def heartbeat(
 
     # Update status
     host.status = request.status
-    host.last_heartbeat = datetime.utcnow()
+    host.last_heartbeat = datetime.now(timezone.utc)
     database.commit()
 
     # TODO: Check for pending jobs to dispatch

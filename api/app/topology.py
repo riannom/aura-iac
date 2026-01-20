@@ -172,6 +172,8 @@ def _parse_link_item(item: Any) -> GraphLink | None:
                     node=node_name,
                     ifname=value.get("ifname"),
                     type=ep_type,
+                    ipv4=value.get("ipv4"),
+                    ipv6=value.get("ipv6"),
                 ))
             else:
                 endpoints.append(GraphEndpoint(node=node_name, type=ep_type))
@@ -283,9 +285,11 @@ def analyze_topology(graph: TopologyGraph, default_host: str | None = None) -> T
                     node_a=ep_a.node,
                     interface_a=ep_a.ifname or f"eth{link_counter}",
                     host_a=host_a,
+                    ip_a=ep_a.ipv4,
                     node_b=ep_b.node,
                     interface_b=ep_b.ifname or f"eth{link_counter}",
                     host_b=host_b,
+                    ip_b=ep_b.ipv4,
                 )
             )
             link_counter += 1

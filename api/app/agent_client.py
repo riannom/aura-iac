@@ -158,7 +158,8 @@ async def get_healthy_agent(
         A healthy agent with capacity, or None if none available.
     """
     # Find agents that have sent heartbeat recently (within 60 seconds)
-    cutoff = datetime.utcnow() - timedelta(seconds=60)
+    from datetime import timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
     exclude_agents = exclude_agents or []
 
     query = database.query(models.Host).filter(
@@ -435,7 +436,8 @@ async def get_agent_by_name(
     Returns:
         Agent if found and healthy, None otherwise
     """
-    cutoff = datetime.utcnow() - timedelta(seconds=60)
+    from datetime import timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
 
     agent = (
         database.query(models.Host)
@@ -464,13 +466,22 @@ async def update_stale_agents(database: Session, timeout_seconds: int = 90) -> l
 
     Returns list of agent IDs that were marked offline.
     """
-    cutoff = datetime.utcnow() - timedelta(seconds=timeout_seconds)
+    from datetime import timezone
+    from sqlalchemy import or_
 
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+
+    # Mark as stale if:
+    # 1. last_heartbeat is older than cutoff, OR
+    # 2. last_heartbeat is NULL (never heartbeated)
     stale_agents = (
         database.query(models.Host)
         .filter(
             models.Host.status == "online",
-            models.Host.last_heartbeat < cutoff,
+            or_(
+                models.Host.last_heartbeat < cutoff,
+                models.Host.last_heartbeat.is_(None),
+            ),
         )
         .all()
     )
@@ -587,6 +598,7 @@ async def attach_container_on_agent(
     link_id: str,
     container_name: str,
     interface_name: str,
+    ip_address: str | None = None,
 ) -> dict:
     """Attach a container to an overlay bridge on an agent.
 
@@ -596,28 +608,30 @@ async def attach_container_on_agent(
         link_id: Link identifier (matches the tunnel/bridge)
         container_name: Docker container name
         interface_name: Interface name inside container (e.g., eth1)
+        ip_address: Optional IP address in CIDR format (e.g., "10.0.0.1/24")
 
     Returns:
         Dict with 'success' and optionally 'error' keys
     """
     url = f"{get_agent_url(agent)}/overlay/attach"
 
+    payload = {
+        "lab_id": lab_id,
+        "link_id": link_id,
+        "container_name": container_name,
+        "interface_name": interface_name,
+    }
+    if ip_address:
+        payload["ip_address"] = ip_address
+
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                url,
-                json={
-                    "lab_id": lab_id,
-                    "link_id": link_id,
-                    "container_name": container_name,
-                    "interface_name": interface_name,
-                },
-                timeout=30.0,
-            )
+            response = await client.post(url, json=payload, timeout=30.0)
             response.raise_for_status()
             result = response.json()
             if result.get("success"):
-                logger.info(f"Attached {container_name} to overlay on {agent.id}")
+                ip_info = f" with IP {ip_address}" if ip_address else ""
+                logger.info(f"Attached {container_name} to overlay on {agent.id}{ip_info}")
             else:
                 logger.warning(f"Container attachment failed on {agent.id}: {result.get('error')}")
             return result
@@ -693,6 +707,8 @@ async def setup_cross_host_link(
     interface_a: str,
     node_b: str,
     interface_b: str,
+    ip_a: str | None = None,
+    ip_b: str | None = None,
     vni: int | None = None,
 ) -> dict:
     """Set up a cross-host link between two agents.
@@ -710,6 +726,8 @@ async def setup_cross_host_link(
         interface_a: Interface name in node_a
         node_b: Container name on agent_b
         interface_b: Interface name in node_b
+        ip_a: Optional IP address for node_a's interface (CIDR format)
+        ip_b: Optional IP address for node_b's interface (CIDR format)
         vni: Optional VNI (auto-allocated if not specified)
 
     Returns:
@@ -768,6 +786,7 @@ async def setup_cross_host_link(
         link_id=link_id,
         container_name=node_a,
         interface_name=interface_a,
+        ip_address=ip_a,
     )
 
     if not attach_a.get("success"):
@@ -779,6 +798,7 @@ async def setup_cross_host_link(
         link_id=link_id,
         container_name=node_b,
         interface_name=interface_b,
+        ip_address=ip_b,
     )
 
     if not attach_b.get("success"):
